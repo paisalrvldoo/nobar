@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 type ChatMessage = {
@@ -31,6 +31,7 @@ const VOICE_CONSTRAINTS: MediaStreamConstraints = {
 
 export default function RoomPage() {
   const params = useParams();
+  const router = useRouter();
   const roomId = String(params.roomId || "").toUpperCase();
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -663,6 +664,30 @@ export default function RoomPage() {
   };
 
   // =========================
+  // FULLSCREEN / EXIT ROOM
+  // =========================
+
+  const toggleFullscreen = async () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await video.requestFullscreen();
+      }
+    } catch (error) {
+      console.error("Fullscreen error:", error);
+    }
+  };
+
+  const leaveRoom = async () => {
+    await endVoiceCall(true);
+    router.push("/");
+  };
+
+  // =========================
   // UI
   // =========================
 
@@ -686,6 +711,13 @@ export default function RoomPage() {
         </div>
 
         <div className="flex items-center gap-3">
+
+          <button
+            onClick={leaveRoom}
+            className="rounded-full border border-red-400/20 bg-red-500/10 px-4 py-2 text-xs font-medium text-red-300 transition hover:bg-red-500/20"
+          >
+            ← Keluar Room
+          </button>
 
           <div className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs text-white/50">
             Room:
@@ -843,6 +875,15 @@ export default function RoomPage() {
                   onChange={(e) => changeMovieVolume(Number(e.target.value))}
                   className="w-24 accent-white"
                 />
+
+                <button
+                  onClick={toggleFullscreen}
+                  disabled={!movieUrl}
+                  className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-30"
+                  title="Fullscreen"
+                >
+                  ⛶
+                </button>
 
               </div>
 
