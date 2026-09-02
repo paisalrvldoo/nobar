@@ -23,6 +23,11 @@ export default function RoomPage() {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const channelRef = useRef<any>(null);
+  const peerRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  const remoteUserRef = useRef<string | null>(null);
+  const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
 
   // Mencegah event dari partner dikirim balik lagi
   const remoteUpdateRef = useRef(false);
@@ -34,6 +39,10 @@ export default function RoomPage() {
   const [onlineCount, setOnlineCount] = useState(1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [movieVolume, setMovieVolume] = useState(1);
+  const [callVolume, setCallVolume] = useState(1);
+  const [callMuted, setCallMuted] = useState(false);
+  const [callStatus, setCallStatus] = useState<"idle" | "calling" | "incoming" | "connected">("idle");
 
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -88,6 +97,177 @@ export default function RoomPage() {
 
     loadRoom();
   }, [roomId, userId]);
+
+  // =========================
+  // WEBRTC VOICE CALL
+  // =========================
+
+  const sendCallSignal = async (event: string, payload: any) => {
+    if (!channelRef.current) return;
+    await channelRef.current.send({
+      type: "broadcast",
+      event,
+      payload: { ...payload, from: userId },
+    });
+  };
+
+  const cleanupCall = () => {
+    peerRef.current?.close();
+    peerRef.current = null;
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+    pendingIceRef.current = [];
+    remoteUserRef.current = null;
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+    setCallStatus("idle");
+  };
+
+  const endVoiceCall = async (notify = true) => {
+    const target = remoteUserRef.current;
+    if (notify && target) {
+      await sendCallSignal("call_end", { target });
+    }
+    cleanupCall();
+  };
+
+  const createPeer = async (target: string) => {
+    if (peerRef.current) return peerRef.current;
+
+    const peer = new RTCPeerConnection({
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ],
+    });
+
+    peerRef.current = peer;
+    remoteUserRef.current = target;
+
+    peer.onicecandidate = (e) => {
+      if (e.candidate) {
+        sendCallSignal("webrtc_ice", {
+          target,
+          candidate: e.candidate.toJSON(),
+        });
+      }
+    };
+
+    peer.ontrack = (e) => {
+      const stream = e.streams[0];
+      if (remoteAudioRef.current && stream) {
+        remoteAudioRef.current.srcObject = stream;
+        remoteAudioRef.current.volume = callMuted ? 0 : callVolume;
+        remoteAudioRef.current.play().catch(() => {});
+      }
+      setCallStatus("connected");
+    };
+
+    peer.onconnectionstatechange = () => {
+      if (peer.connectionState === "connected") setCallStatus("connected");
+      if (["failed", "disconnected", "closed"].includes(peer.connectionState)) {
+        cleanupCall();
+      }
+    };
+
+    return peer;
+  };
+
+  const startVoiceCall = async () => {
+    if (onlineCount < 2) {
+      alert("Partner belum masuk room.");
+      return;
+    }
+
+    try {
+      setCallStatus("calling");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStreamRef.current = stream;
+
+      const users = Object.values(channelRef.current?.presenceState() || {}).flat() as any[];
+      const partner = users.find((u) => u.user_id !== userId);
+
+      if (!partner?.user_id) {
+        cleanupCall();
+        alert("Partner tidak ditemukan.");
+        return;
+      }
+
+      const target = partner.user_id as string;
+      const peer = await createPeer(target);
+      stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      await sendCallSignal("webrtc_offer", { target, offer });
+    } catch (error: any) {
+      cleanupCall();
+      alert(error?.name === "NotAllowedError"
+        ? "Izin microphone ditolak. Izinkan microphone di browser."
+        : `Gagal memulai call: ${error?.message || "Unknown error"}`);
+    }
+  };
+
+  const answerVoiceCall = async () => {
+    const target = remoteUserRef.current;
+    const peer = peerRef.current;
+    const offer = (peer as any)?.pendingOffer;
+
+    if (!target || !peer || !offer) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStreamRef.current = stream;
+      stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+
+      await peer.setRemoteDescription(new RTCSessionDescription(offer));
+
+      for (const candidate of pendingIceRef.current) {
+        await peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+      }
+      pendingIceRef.current = [];
+
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      await sendCallSignal("webrtc_answer", { target, answer });
+      setCallStatus("connected");
+    } catch (error: any) {
+      cleanupCall();
+      alert(error?.name === "NotAllowedError"
+        ? "Izin microphone ditolak. Izinkan microphone di browser."
+        : `Gagal menjawab call: ${error?.message || "Unknown error"}`);
+    }
+  };
+
+  const toggleCallMute = () => {
+    const track = localStreamRef.current?.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    setCallMuted(!track.enabled);
+  };
+
+  const changeCallVolume = (value: number) => {
+    setCallVolume(value);
+    if (remoteAudioRef.current) remoteAudioRef.current.volume = value;
+  };
+
+  const changeMovieVolume = (value: number) => {
+    setMovieVolume(value);
+    if (videoRef.current) {
+      videoRef.current.volume = value;
+      videoRef.current.muted = value === 0;
+      setMuted(value === 0);
+    }
+  };
+
+  // =========================
+  // MOVIE VOLUME
+  // =========================
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.volume = movieVolume;
+    }
+  }, [movieVolume]);
 
   // =========================
   // REALTIME ROOM
@@ -172,6 +352,44 @@ export default function RoomPage() {
       )
 
       // =========================
+      // WEBRTC SIGNALING
+      // =========================
+
+      .on("broadcast", { event: "webrtc_offer" }, async ({ payload }) => {
+        if (!payload || payload.target !== userId) return;
+        const peer = await createPeer(payload.from);
+        (peer as any).pendingOffer = payload.offer;
+        setCallStatus("incoming");
+      })
+
+      .on("broadcast", { event: "webrtc_answer" }, async ({ payload }) => {
+        if (!payload || payload.target !== userId || !peerRef.current) return;
+        await peerRef.current.setRemoteDescription(
+          new RTCSessionDescription(payload.answer)
+        );
+        for (const candidate of pendingIceRef.current) {
+          await peerRef.current.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+        }
+        pendingIceRef.current = [];
+        setCallStatus("connected");
+      })
+
+      .on("broadcast", { event: "webrtc_ice" }, async ({ payload }) => {
+        if (!payload || payload.target !== userId) return;
+        if (peerRef.current?.remoteDescription) {
+          await peerRef.current.addIceCandidate(
+            new RTCIceCandidate(payload.candidate)
+          ).catch(() => {});
+        } else {
+          pendingIceRef.current.push(payload.candidate);
+        }
+      })
+
+      .on("broadcast", { event: "call_end" }, async ({ payload }) => {
+        if (payload?.target === userId) cleanupCall();
+      })
+
+      // =========================
       // CHAT
       // =========================
 
@@ -201,6 +419,8 @@ export default function RoomPage() {
     return () => {
       channel.untrack();
       supabase.removeChannel(channel);
+      peerRef.current?.close();
+      localStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, [roomId, userId]);
 
@@ -598,6 +818,18 @@ export default function RoomPage() {
                   {muted ? "🔇" : "🔊"}
                 </button>
 
+                <input
+                  aria-label="Movie volume"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={muted ? 0 : movieVolume}
+                  disabled={!movieUrl}
+                  onChange={(e) => changeMovieVolume(Number(e.target.value))}
+                  className="w-24 accent-white"
+                />
+
               </div>
 
               <div className="text-xs text-white/30">
@@ -697,23 +929,84 @@ export default function RoomPage() {
           {/* CALL */}
 
           <div className="border-b border-white/10 p-5">
-
-            <p className="mb-4 text-xs font-semibold uppercase tracking-wider text-white/30">
-              Voice Call
-            </p>
-
-            <div className="flex gap-2">
-
-              <button className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] py-3 text-sm transition hover:bg-white/10">
-                🎙️ Mute
-              </button>
-
-              <button className="rounded-xl bg-white px-5 py-3 text-sm font-semibold text-black transition hover:bg-white/90">
-                📞 Call
-              </button>
-
+            <div className="mb-4 flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wider text-white/30">
+                Voice Call
+              </p>
+              <span className={`text-[11px] ${
+                callStatus === "connected"
+                  ? "text-green-400"
+                  : callStatus === "incoming"
+                    ? "text-yellow-400"
+                    : "text-white/30"
+              }`}>
+                {callStatus === "connected" ? "● Connected"
+                  : callStatus === "calling" ? "Calling..."
+                  : callStatus === "incoming" ? "Incoming call"
+                  : "Ready"}
+              </span>
             </div>
 
+            <audio ref={remoteAudioRef} autoPlay playsInline />
+
+            {callStatus === "incoming" ? (
+              <div className="flex gap-2">
+                <button
+                  onClick={answerVoiceCall}
+                  className="flex-1 rounded-xl bg-white py-3 text-sm font-semibold text-black"
+                >
+                  📞 Answer
+                </button>
+                <button
+                  onClick={() => endVoiceCall(true)}
+                  className="rounded-xl bg-red-500/15 px-4 py-3 text-sm text-red-300"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : callStatus === "idle" ? (
+              <button
+                onClick={startVoiceCall}
+                disabled={onlineCount < 2}
+                className="w-full rounded-xl bg-white py-3 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:opacity-30"
+              >
+                📞 Call Partner
+              </button>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <button
+                    onClick={toggleCallMute}
+                    className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] py-3 text-sm"
+                  >
+                    {callMuted ? "🔇 Unmute" : "🎙️ Mute"}
+                  </button>
+                  <button
+                    onClick={() => endVoiceCall(true)}
+                    className="rounded-xl bg-red-500/15 px-4 py-3 text-sm text-red-300"
+                  >
+                    📵 End
+                  </button>
+                </div>
+
+                <div>
+                  <div className="mb-1 flex justify-between text-[11px] text-white/35">
+                    <span>Call volume</span>
+                    <span>{Math.round(callVolume * 100)}%</span>
+                  </div>
+                  <input
+                    aria-label="Call volume"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={callVolume}
+                    onChange={(e) => changeCallVolume(Number(e.target.value))}
+                    className="w-full accent-white"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* CHAT */}
