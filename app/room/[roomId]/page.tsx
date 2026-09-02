@@ -26,6 +26,9 @@ export default function RoomPage() {
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const remoteGainRef = useRef<GainNode | null>(null);
+  const remoteSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const remoteUserRef = useRef<string | null>(null);
   const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
 
@@ -43,6 +46,7 @@ export default function RoomPage() {
   const [callVolume, setCallVolume] = useState(1);
   const [callMuted, setCallMuted] = useState(false);
   const [callStatus, setCallStatus] = useState<"idle" | "calling" | "incoming" | "connected">("idle");
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -119,6 +123,14 @@ export default function RoomPage() {
     pendingIceRef.current = [];
     remoteUserRef.current = null;
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+    remoteSourceRef.current?.disconnect();
+    remoteSourceRef.current = null;
+    remoteGainRef.current?.disconnect();
+    remoteGainRef.current = null;
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
     setCallStatus("idle");
   };
 
@@ -156,7 +168,33 @@ export default function RoomPage() {
       const stream = e.streams[0];
       if (remoteAudioRef.current && stream) {
         remoteAudioRef.current.srcObject = stream;
-        remoteAudioRef.current.volume = callMuted ? 0 : callVolume;
+        remoteAudioRef.current.volume = 1;
+
+        // Web Audio gain gives the call more headroom than the normal
+        // HTML audio volume slider, while keeping the movie volume separate.
+        try {
+          const AudioContextClass =
+            window.AudioContext || (window as any).webkitAudioContext;
+          const audioContext =
+            audioContextRef.current || new AudioContextClass();
+          audioContextRef.current = audioContext;
+
+          remoteSourceRef.current?.disconnect();
+          remoteGainRef.current?.disconnect();
+
+          const source = audioContext.createMediaStreamSource(stream);
+          const gain = audioContext.createGain();
+          gain.gain.value = callMuted ? 0 : callVolume * 1.6;
+
+          source.connect(gain);
+          gain.connect(audioContext.destination);
+          remoteSourceRef.current = source;
+          remoteGainRef.current = gain;
+          audioContext.resume().catch(() => {});
+        } catch (error) {
+          console.warn("Web Audio boost unavailable:", error);
+        }
+
         remoteAudioRef.current.play().catch(() => {});
       }
       setCallStatus("connected");
@@ -180,7 +218,15 @@ export default function RoomPage() {
 
     try {
       setCallStatus("calling");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 48000,
+        },
+      });
       localStreamRef.current = stream;
 
       const users = Object.values(channelRef.current?.presenceState() || {}).flat() as any[];
@@ -215,7 +261,15 @@ export default function RoomPage() {
     if (!target || !peer || !offer) return;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 48000,
+        },
+      });
       localStreamRef.current = stream;
       stream.getTracks().forEach((track) => peer.addTrack(track, stream));
 
@@ -243,11 +297,17 @@ export default function RoomPage() {
     if (!track) return;
     track.enabled = !track.enabled;
     setCallMuted(!track.enabled);
+    if (remoteGainRef.current) {
+      remoteGainRef.current.gain.value = !track.enabled ? 0 : callVolume * 1.6;
+    }
   };
 
   const changeCallVolume = (value: number) => {
     setCallVolume(value);
-    if (remoteAudioRef.current) remoteAudioRef.current.volume = value;
+    if (remoteAudioRef.current) remoteAudioRef.current.volume = 1;
+    if (remoteGainRef.current) {
+      remoteGainRef.current.gain.value = callMuted ? 0 : value * 1.6;
+    }
   };
 
   const changeMovieVolume = (value: number) => {
@@ -619,6 +679,33 @@ export default function RoomPage() {
     setMuted(video.muted);
   };
 
+  const toggleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await videoRef.current?.parentElement?.requestFullscreen();
+        setIsFullscreen(true);
+      } else {
+        await document.exitFullscreen();
+        setIsFullscreen(false);
+      }
+    } catch (error) {
+      console.error("Fullscreen error:", error);
+    }
+  };
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
+
+  const leaveRoom = async () => {
+    await endVoiceCall(true);
+    window.location.href = "/";
+  };
+
   // =========================
   // CHAT
   // =========================
@@ -683,6 +770,13 @@ export default function RoomPage() {
           <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-xs">
             <span className="h-2 w-2 rounded-full bg-green-400" />
             {Math.min(onlineCount, 2)} / 2
+            <button
+              onClick={leaveRoom}
+              className="rounded-full border border-red-400/20 bg-red-400/10 px-4 py-2 text-xs font-medium text-red-300 transition hover:bg-red-400/20"
+            >
+              Keluar Room
+            </button>
+
           </div>
 
         </div>
@@ -829,6 +923,15 @@ export default function RoomPage() {
                   onChange={(e) => changeMovieVolume(Number(e.target.value))}
                   className="w-24 accent-white"
                 />
+
+                <button
+                  onClick={toggleFullscreen}
+                  disabled={!movieUrl}
+                  className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm disabled:opacity-30"
+                  title="Fullscreen"
+                >
+                  {isFullscreen ? "⛶ Exit" : "⛶ Fullscreen"}
+                </button>
 
               </div>
 
