@@ -15,7 +15,7 @@ type VideoControl = {
   time: number;
 };
 
-const VIDEO_SERVER = "https://annie-efforts-columns-federal.trycloudflare.com";
+const VIDEO_SERVER = "https://discharge-nations-dose-highway.trycloudflare.com";
 
 export default function RoomPage() {
   const params = useParams();
