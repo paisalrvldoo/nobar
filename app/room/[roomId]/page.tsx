@@ -15,7 +15,7 @@ type VideoControl = {
   time: number;
 };
 
-const VIDEO_SERVER = "http://104.207.77.230:3001";
+const VIDEO_SERVER = "https://annie-efforts-columns-federal.trycloudflare.com";
 
 export default function RoomPage() {
   const params = useParams();
