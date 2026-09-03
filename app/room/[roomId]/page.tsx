@@ -41,6 +41,7 @@ export default function RoomPage() {
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
   const remoteUserRef = useRef<string | null>(null);
   const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
+  const openMicStartedRef = useRef(false);
 
   // Mencegah event dari partner dikirim balik lagi
   const remoteUpdateRef = useRef(false);
@@ -130,6 +131,7 @@ export default function RoomPage() {
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
     pendingIceRef.current = [];
+    openMicStartedRef.current = false;
     remoteUserRef.current = null;
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
     setCallStatus("idle");
@@ -186,12 +188,22 @@ export default function RoomPage() {
   };
 
   const startVoiceCall = async () => {
+    if (
+      openMicStartedRef.current ||
+      peerRef.current ||
+      callStatus === "calling" ||
+      callStatus === "connected"
+    ) {
+      return;
+    }
+
     if (onlineCount < 2) {
       alert("Partner belum masuk room.");
       return;
     }
 
     try {
+      openMicStartedRef.current = true;
       setCallStatus("calling");
       const stream = await navigator.mediaDevices.getUserMedia(VOICE_CONSTRAINTS);
       localStreamRef.current = stream;
@@ -214,6 +226,7 @@ export default function RoomPage() {
       await peer.setLocalDescription(offer);
       await sendCallSignal("webrtc_offer", { target, offer });
     } catch (error: any) {
+      openMicStartedRef.current = false;
       cleanupCall();
       alert(error?.name === "NotAllowedError"
         ? "Izin microphone ditolak. Izinkan microphone di browser."
@@ -438,6 +451,21 @@ export default function RoomPage() {
       localStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, [roomId, userId]);
+
+  // =========================
+  // OPEN MIC
+  // =========================
+
+  useEffect(() => {
+    if (!roomId || !userId || onlineCount < 2) return;
+    if (openMicStartedRef.current || peerRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      startVoiceCall();
+    }, 700);
+
+    return () => window.clearTimeout(timer);
+  }, [roomId, userId, onlineCount]);
 
   // =========================
   // UPLOAD MOVIE
@@ -986,7 +1014,7 @@ export default function RoomPage() {
           <div className="border-b border-white/10 p-5">
             <div className="mb-4 flex items-center justify-between">
               <p className="text-xs font-semibold uppercase tracking-wider text-white/30">
-                Voice Call
+                Open Mic
               </p>
               <span className={`text-[11px] ${
                 callStatus === "connected"
@@ -996,7 +1024,7 @@ export default function RoomPage() {
                     : "text-white/30"
               }`}>
                 {callStatus === "connected" ? "● Connected"
-                  : callStatus === "calling" ? "Calling..."
+                  : callStatus === "calling" ? "Connecting..."
                   : callStatus === "incoming" ? "Incoming call"
                   : "Ready"}
               </span>
@@ -1005,28 +1033,23 @@ export default function RoomPage() {
             <audio ref={remoteAudioRef} autoPlay playsInline />
 
             {callStatus === "incoming" ? (
-              <div className="flex gap-2">
+              <div className="space-y-2">
+                <div className="rounded-xl bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
+                  🎙️ Incoming Open Mic...
+                </div>
                 <button
                   onClick={answerVoiceCall}
-                  className="flex-1 rounded-xl bg-white py-3 text-sm font-semibold text-black"
+                  className="w-full rounded-xl bg-white py-3 text-sm font-semibold text-black"
                 >
-                  📞 Answer
-                </button>
-                <button
-                  onClick={() => endVoiceCall(true)}
-                  className="rounded-xl bg-red-500/15 px-4 py-3 text-sm text-red-300"
-                >
-                  ✕
+                  🎙️ Enable Mic
                 </button>
               </div>
             ) : callStatus === "idle" ? (
-              <button
-                onClick={startVoiceCall}
-                disabled={onlineCount < 2}
-                className="w-full rounded-xl bg-white py-3 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:opacity-30"
-              >
-                📞 Call Partner
-              </button>
+              <div className="rounded-xl bg-white/[0.04] px-3 py-3 text-center text-xs text-white/40">
+                {onlineCount < 2
+                  ? "Waiting for partner..."
+                  : "🎙️ Open Mic starting..."}
+              </div>
             ) : (
               <div className="space-y-3">
                 <div className="flex gap-2">
