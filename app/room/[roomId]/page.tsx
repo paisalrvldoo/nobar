@@ -15,7 +15,7 @@ type VideoControl = {
   time: number;
 };
 
-const VIDEO_SERVER = "https://discharge-nations-dose-highway.trycloudflare.com";
+const VIDEO_SERVER = "https://hidden-geographical-formats-enemies.trycloudflare.com";
 
 // Voice settings: optimized to reduce echo/feedback on laptop + iPhone/iPad.
 const VOICE_CONSTRAINTS: MediaStreamConstraints = {
