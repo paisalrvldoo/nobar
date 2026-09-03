@@ -42,6 +42,7 @@ export default function RoomPage() {
   const remoteUserRef = useRef<string | null>(null);
   const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
   const openMicStartedRef = useRef(false);
+  const openMicRequestedRef = useRef(false);
 
   // Mencegah event dari partner dikirim balik lagi
   const remoteUpdateRef = useRef(false);
@@ -187,6 +188,15 @@ export default function RoomPage() {
     return peer;
   };
 
+  const getOpenMicStream = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("Browser ini tidak mendukung microphone.");
+    }
+
+    // Always request audio from a user-gesture on iOS when possible.
+    return navigator.mediaDevices.getUserMedia(VOICE_CONSTRAINTS);
+  };
+
   const startVoiceCall = async () => {
     if (
       openMicStartedRef.current ||
@@ -201,11 +211,10 @@ export default function RoomPage() {
       alert("Partner belum masuk room.");
       return;
     }
-
     try {
       openMicStartedRef.current = true;
       setCallStatus("calling");
-      const stream = await navigator.mediaDevices.getUserMedia(VOICE_CONSTRAINTS);
+      const stream = await getOpenMicStream();
       localStreamRef.current = stream;
       console.log("NOBAR voice constraints:", stream.getAudioTracks()[0]?.getSettings());
 
@@ -242,7 +251,7 @@ export default function RoomPage() {
     if (!target || !peer || !offer) return;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(VOICE_CONSTRAINTS);
+      const stream = await getOpenMicStream();
       localStreamRef.current = stream;
       console.log("NOBAR voice constraints:", stream.getAudioTracks()[0]?.getSettings());
       stream.getTracks().forEach((track) => peer.addTrack(track, stream));
@@ -263,6 +272,18 @@ export default function RoomPage() {
       alert(error?.name === "NotAllowedError"
         ? "Izin microphone ditolak. Izinkan microphone di browser."
         : `Gagal menjawab call: ${error?.message || "Unknown error"}`);
+    }
+  };
+
+  const activateOpenMic = async () => {
+    if (openMicRequestedRef.current) return;
+    openMicRequestedRef.current = true;
+
+    try {
+      await startVoiceCall();
+    } catch (error) {
+      openMicRequestedRef.current = false;
+      throw error;
     }
   };
 
@@ -453,12 +474,20 @@ export default function RoomPage() {
   }, [roomId, userId]);
 
   // =========================
-  // OPEN MIC
+  // OPEN MIC AUTO-CONNECT
   // =========================
 
   useEffect(() => {
     if (!roomId || !userId || onlineCount < 2) return;
     if (openMicStartedRef.current || peerRef.current) return;
+
+    // Desktop can start automatically. iOS/Safari will use the visible
+    // "Aktifkan Open Mic" button because microphone access must follow a tap.
+    const isIOS =
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+    if (isIOS) return;
 
     const timer = window.setTimeout(() => {
       startVoiceCall();
@@ -740,14 +769,14 @@ export default function RoomPage() {
 
         <div className="flex items-center gap-3">
 
-          <button
-            onClick={leaveRoom}
-            className="rounded-full border border-red-400/20 bg-red-500/10 px-4 py-2 text-xs font-medium text-red-300 transition hover:bg-red-500/20"
-          >
-            ← Keluar Room
-          </button>
+                      <button
+              onClick={leaveRoom}
+              className="rounded-full border border-red-400/20 bg-red-500/10 px-4 py-2 text-xs font-medium text-red-300 transition hover:bg-red-500/20"
+            >
+              ← Keluar Room
+            </button>
 
-          <div className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs text-white/50">
+<div className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs text-white/50">
             Room:
             <span className="ml-1 font-mono text-white/80">
               {roomId}
@@ -1024,7 +1053,7 @@ export default function RoomPage() {
                     : "text-white/30"
               }`}>
                 {callStatus === "connected" ? "● Connected"
-                  : callStatus === "calling" ? "Connecting..."
+                  : callStatus === "calling" ? "Calling..."
                   : callStatus === "incoming" ? "Incoming call"
                   : "Ready"}
               </span>
@@ -1035,20 +1064,27 @@ export default function RoomPage() {
             {callStatus === "incoming" ? (
               <div className="space-y-2">
                 <div className="rounded-xl bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
-                  🎙️ Incoming Open Mic...
+                  🎙️ Partner mengajak Open Mic
                 </div>
                 <button
                   onClick={answerVoiceCall}
                   className="w-full rounded-xl bg-white py-3 text-sm font-semibold text-black"
                 >
-                  🎙️ Enable Mic
+                  🎙️ Aktifkan Microphone
                 </button>
               </div>
             ) : callStatus === "idle" ? (
-              <div className="rounded-xl bg-white/[0.04] px-3 py-3 text-center text-xs text-white/40">
-                {onlineCount < 2
-                  ? "Waiting for partner..."
-                  : "🎙️ Open Mic starting..."}
+              <div className="space-y-2">
+                <button
+                  onClick={activateOpenMic}
+                  disabled={onlineCount < 2}
+                  className="w-full rounded-xl bg-white py-3 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  🎙️ Aktifkan Open Mic
+                </button>
+                <p className="text-center text-[11px] text-white/30">
+                  Di iPhone/iPad, tap tombol ini sekali untuk mengizinkan microphone.
+                </p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -1069,11 +1105,11 @@ export default function RoomPage() {
 
                 <div>
                   <div className="mb-1 flex justify-between text-[11px] text-white/35">
-                    <span>Call volume</span>
+                    <span>Mic volume</span>
                     <span>{Math.round(callVolume * 100)}%</span>
                   </div>
                   <input
-                    aria-label="Call volume"
+                    aria-label="Mic volume"
                     type="range"
                     min="0"
                     max="1"
