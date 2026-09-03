@@ -25,6 +25,7 @@ const VOICE_CONSTRAINTS: MediaStreamConstraints = {
     autoGainControl: { ideal: true },
     channelCount: { ideal: 1 },
     sampleRate: { ideal: 48000 },
+    sampleSize: { ideal: 16 },
   },
   video: false,
 };
@@ -188,6 +189,28 @@ export default function RoomPage() {
     return peer;
   };
 
+  const improveVoiceQuality = async (peer: RTCPeerConnection) => {
+    const sender = peer.getSenders().find(
+      (item) => item.track?.kind === "audio"
+    );
+
+    if (!sender) return;
+
+    try {
+      const parameters = sender.getParameters();
+
+      parameters.encodings = parameters.encodings?.length
+        ? parameters.encodings
+        : [{}];
+
+      parameters.encodings[0].maxBitrate = 128000;
+      
+      await sender.setParameters(parameters);
+    } catch (error) {
+      console.warn("Voice quality tuning skipped:", error);
+    }
+  };
+
   const getOpenMicStream = async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("Browser ini tidak mendukung microphone.");
@@ -230,6 +253,7 @@ export default function RoomPage() {
       const target = partner.user_id as string;
       const peer = await createPeer(target);
       stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+      await improveVoiceQuality(peer);
 
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
@@ -255,6 +279,7 @@ export default function RoomPage() {
       localStreamRef.current = stream;
       console.log("NOBAR voice constraints:", stream.getAudioTracks()[0]?.getSettings());
       stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+      await improveVoiceQuality(peer);
 
       await peer.setRemoteDescription(new RTCSessionDescription(offer));
 
